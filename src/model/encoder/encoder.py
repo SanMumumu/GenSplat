@@ -3,6 +3,9 @@ from typing import Generic, TypeVar
 
 from torch import nn
 from dataclasses import dataclass
+from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 from src.dataset.types import BatchedViews, DataShim
 from ..types import Gaussians
 from jaxtyping import Float

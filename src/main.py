@@ -129,13 +129,15 @@ def train(cfg_dict: DictConfig):
         accumulate_grad_batches=cfg.trainer.accumulate_grad_batches,
         # plugins=[SLURMEnvironment(requeue_signal=signal.SIGUSR1)],  # Uncomment for SLURM auto resubmission.
         inference_mode=False if (cfg.mode == "test" and cfg.test.align_pose) else True,
-        use_distributed_sampler=False,
-        default_root_dir="/var_lib_datalv/senwang_ckpts/my_save/"
+        use_distributed_sampler=False 
     )
     torch.manual_seed(cfg_dict.seed + trainer.global_rank)
     
     model = get_model(cfg.model.encoder, cfg.model.decoder)
     model_weights = load_file(checkpoint_path)
+    model.load_state_dict(model_weights, strict=False)
+    
+    model_weights = load_file('/mnt/nodestor/ws/GS/AnySplat/Z/model.safetensors')
     model.load_state_dict(model_weights, strict=False)
     
     model_wrapper = ModelWrapper(

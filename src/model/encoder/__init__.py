@@ -2,13 +2,13 @@ from typing import Optional, Union
 
 from .encoder import Encoder
 from .visualization.encoder_visualizer import EncoderVisualizer
-from .anysplat import EncoderAnySplat, EncoderAnySplatCfg
+from .gensplat import EncoderGenSplat, EncoderGenSplatCfg
 
 ENCODERS = {
-    "anysplat": (EncoderAnySplat, None),
+    "gensplat": (EncoderGenSplat, None),
 }
 
-EncoderCfg = Union[EncoderAnySplatCfg]
+EncoderCfg = Union[EncoderGenSplatCfg]
 
 
 def get_encoder(cfg: EncoderCfg) -> tuple[Encoder, Optional[EncoderVisualizer]]:

@@ -189,7 +189,17 @@ class ModelWrapper(LightningModule):
                         else:
                             raise NotImplementedError
             batch = batch_combined
+        
+        
+        batch: BatchedExample = self.data_shim(batch)
+        b, v, c, h, w = batch["context"]["image"].shape
+        context_image = (batch["context"]["image"] + 1) / 2
+        
 
+        batch: BatchedExample = self.data_shim(batch)
+        b, v, c, h, w = batch["context"]["image"].shape
+        context_image = (batch["context"]["image"] + 1) / 2
+        
         # Run the model.
         visualization_dump = None
         encoder_output, output = self.model(batch["context"]["image"], self.global_step, visualization_dump=visualization_dump)

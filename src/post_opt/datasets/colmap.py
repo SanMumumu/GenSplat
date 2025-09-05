@@ -7,16 +7,16 @@ import imageio.v2 as imageio
 import numpy as np
 import torch
 from PIL import Image
-from pycolmap import SceneManager
+from .pycolmap import SceneManager
 from tqdm import tqdm
 from typing_extensions import assert_never
 
 import sys
-sys.path.append("/cpfs01/user/jianglihan/projects/gsplat/examples/datasets")
-sys.path.append("/cpfs01/user/jianglihan/projects/gsplat/examples")
-sys.path.append("/cpfs01/user/jianglihan/projects/gsplat")
+sys.path.append("/mnt/nodestor/ws/GS/AnySplat/src/post_opt/datasets/gspla/examples/datasets")
+sys.path.append("/mnt/nodestor/ws/GS/AnySplat/src/post_opt/datasets/gspla/examples")
+sys.path.append("/mnt/nodestor/ws/GS/AnySplat/src/post_opt/datasets/gspla")
 
-from normalize import (
+from .normalize import (
     align_principal_axes,
     similarity_from_cameras,
     transform_cameras,

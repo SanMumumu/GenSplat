@@ -165,21 +165,21 @@ def process_image(img_path):
     if img.mode == 'RGBA':
         # Convert RGBA to RGB by removing alpha channel
         img = img.convert('RGB')
-    # Resize to maintain aspect ratio and then center crop to 448x448
+    # Resize to maintain aspect ratio and then center crop to 518x518
     width, height = img.size
     if width > height:
-        new_height = 448
-        new_width = int(width * (new_height / height))
+        new_width = 518
+        new_height = round(height * (new_width / width) / 14) * 14
     else:
-        new_width = 448
+        new_width = 518
         new_height = int(height * (new_width / width))
     img = img.resize((new_width, new_height))
     
     # Center crop
-    left = (new_width - 448) // 2
-    top = (new_height - 448) // 2
-    right = left + 448
-    bottom = top + 448
-    img = img.crop((left, top, right, bottom))
+    # left = (new_width - 518) // 2
+    # top = (new_height - 518) // 2
+    # right = left + 518
+    # bottom = top + 518
+    # img = img.crop((left, top, right, bottom))
     img_tensor = torchvision.transforms.ToTensor()(img) * 2.0 - 1.0 # [-1, 1]
     return img_tensor

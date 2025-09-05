@@ -3,7 +3,7 @@ defaults:
   - view_sampler: bounded
 
 name: droid
-roots: [/var_lib_datalv/senwang/] # /mnt/hwdata/senwang/AnySplat/dataset/droid
+roots: [/mnt/hwdata/wangsen/droid_GS/]
 
 original_image_shape: [720, 1280]
 cameras_are_circular: false

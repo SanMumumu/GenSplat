@@ -60,7 +60,7 @@ from jaxtyping import Float
 from torch import Tensor
 from scipy.spatial.transform import Rotation as R
 
-from src.model.model.anysplat import anysplat
+from src.model.model.anysplat import AnySplat
 
 
 # pytorch3d/pytorch3d/transforms/rotation_conversions.py at main · facebookresearch/pytorch3d
@@ -458,7 +458,7 @@ class Runner:
         self.writer = SummaryWriter(log_dir=f"{cfg.result_dir}/tb")
         
         # first get the initial 3DGS and camera poses
-        model = anysplat.from_pretrained("lhjiang/anysplat")
+        model = GenSplat.from_pretrained("lhjiang/anysplat")
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model.to(device)
         model.eval()
@@ -468,8 +468,8 @@ class Runner:
         image_folder = cfg.data_dir
         image_names = sorted([os.path.join(image_folder, f) for f in os.listdir(image_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
         images = [process_image(img_path) for img_path in image_names]
-        ctx_indices = [idx for idx, name in enumerate(image_names) if idx % cfg.test_every != 0]
-        tgt_indices = [idx for idx, name in enumerate(image_names) if idx % cfg.test_every == 0]
+        ctx_indices = [0,1]
+        tgt_indices = [0,1]
         
         ctx_images = torch.stack([images[i] for i in ctx_indices], dim=0).unsqueeze(0).to(device)
         tgt_images = torch.stack([images[i] for i in tgt_indices], dim=0).unsqueeze(0).to(device)

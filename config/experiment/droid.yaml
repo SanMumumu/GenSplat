@@ -2,12 +2,12 @@
 
 defaults:
   - /dataset@_group_.droid: droid
-  - override /model/encoder: anysplat
+  - override /model/encoder: gensplat
   - override /loss: [mse, lpips, depth_consis] # ablate: opacity loss
 
 swanlab:
   name: droid
-  tags: [droid, 294*518, voxelize:false]
+  tags: [droid, 294*518]
   
 model:
   encoder:
@@ -20,13 +20,11 @@ model:
     pred_pose: true
     anchor_feat_dim: 128
     gs_prune: false # ablate: opacity loss
-    pred_head_type: depth
     freeze_backbone: false
     distill: true
     render_conf: false
     conf_threshold: 0.1
     freeze_module: patch_embed
-    voxelize: false # ablate: voxelization
     opacity_conf: false # ablate: Opacity-based pruning
     intermediate_layer_idx: [4, 11, 17, 23]
     
@@ -53,7 +51,11 @@ optimizer:
 
 data_loader:
   train:
-    batch_size: 1 # not used here
+    batch_size: 1   # not used here
+    num_workers: 16 # not used here
+  eval:
+    batch_size: 1   # not used here
+    num_workers: 1  # not used here
     
 trainer:
   max_steps: 30000
@@ -63,7 +65,7 @@ trainer:
   precision: bf16-mixed
 
 checkpointing:
-  load: '/var_lib_datalv/senwang_ckpts/anysplat/model.safetensors'
+  load: '/mnt/hwdata/wangsen/anysplat_ckpt/model.safetensors'
   every_n_train_steps: 200
   save_weights_only: false
   save_top_k: 1
