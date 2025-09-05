@@ -1,0 +1,18 @@
+defaults:
+  - base_dataset
+  - view_sampler: bounded
+
+name: droid
+roots: [/var_lib_datalv/senwang/] # /mnt/hwdata/senwang/AnySplat/dataset/droid
+
+original_image_shape: [720, 1280]
+cameras_are_circular: false
+
+baseline_min: 1e-3
+baseline_max: 1e2
+max_fov: 120.0
+avg_pose: false
+
+rescale_to_1cube: true
+make_baseline_1: false
+intr_augment: true
