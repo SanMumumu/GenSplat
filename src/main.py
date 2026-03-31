@@ -19,8 +19,7 @@ from lightning.pytorch.utilities.rank_zero import rank_zero_only
 import sys
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.model.model import get_model
-from src.misc.weight_modify import checkpoint_filter_fn
-from safetensors.torch import load_file
+from src.misc.checkpoint_tools import load_module_checkpoint
 
 import warnings
 warnings.filterwarnings("ignore")
@@ -134,8 +133,29 @@ def train(cfg_dict: DictConfig):
     torch.manual_seed(cfg_dict.seed + trainer.global_rank)
     
     model = get_model(cfg.model.encoder, cfg.model.decoder)
-    model_weights = load_file(checkpoint_path)
-    model.load_state_dict(model_weights, strict=False)
+    init_checkpoint_path = getattr(cfg.model.encoder, "pretrained_weights", "") or None
+
+    loaded_paths = set()
+    for label, path, prefixes in (
+        ("model init", init_checkpoint_path, ("model.",)),
+        ("resume checkpoint", checkpoint_path, ("model.",)),
+    ):
+        if not path or path in loaded_paths:
+            continue
+        incompatible, matched_keys = load_module_checkpoint(
+            model,
+            path,
+            prefixes=prefixes,
+        )
+        loaded_paths.add(path)
+        print(
+            cyan(
+                f"Loaded {label} from {path} "
+                f"(matched={matched_keys}, "
+                f"missing={len(incompatible.missing_keys)}, "
+                f"unexpected={len(incompatible.unexpected_keys)})."
+            )
+        )
     
     model_wrapper = ModelWrapper(
         cfg.optimizer,

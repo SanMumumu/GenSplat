@@ -14,53 +14,33 @@ from swanlab.integration.pytorch_lightning import SwanLabLogger
 from lightning.pytorch.utilities import rank_zero_only
 from tabulate import tabulate
 from torch import Tensor, nn
-from datetime import datetime
 import imageio
-import imageio.v2 as iio
 import numpy as np
 
-from loss.loss_lpips import LossLpips
-from loss.loss_mse import LossMse
-from model.encoder.vggt.utils.pose_enc import pose_encoding_to_extri_intri
-
-from ..loss.loss_distill import DistillLoss
-from src.utils.render import generate_path
 from src.utils.point import get_normal_map
 
-from ..loss.loss_huber import HuberLoss, extri_intri_to_pose_encoding
-
-# from model.types import Gaussians
+from ..loss.loss_huber import HuberLoss
 
 from ..dataset.data_module import get_data_shim
 from ..dataset.types import BatchedExample
 from ..evaluation.metrics import compute_lpips, compute_psnr, compute_ssim, abs_relative_difference, delta1_acc
 from ..global_cfg import get_cfg
 from ..loss import Loss
-from ..loss.loss_point import Regr3D
-from ..loss.loss_ssim import ssim
 from ..misc.benchmarker import Benchmarker
-from ..misc.cam_utils import update_pose, get_pnp_pose, rotation_6d_to_matrix
+from ..misc.cam_utils import rotation_6d_to_matrix
 from ..misc.image_io import prep_image, save_image, save_video
 from ..misc.LocalLogger import LOG_PATH, LocalLogger
-from ..misc.nn_module_tools import convert_to_buffer
 from ..misc.step_tracker import StepTracker
-from ..misc.utils import inverse_normalize, vis_depth_map, confidence_map, get_overlap_tag
+from ..misc.utils import inverse_normalize, vis_depth_map, get_overlap_tag
 from ..visualization.annotation import add_label
 from ..visualization.camera_trajectory.interpolation import (
     interpolate_extrinsics,
     interpolate_intrinsics,
 )
-from ..visualization.camera_trajectory.wobble import (
-    generate_wobble,
-    generate_wobble_transformation,
-)
-from ..visualization.color_map import apply_color_map_to_image
+from ..visualization.camera_trajectory.wobble import generate_wobble
 from ..visualization.layout import hcat, vcat
-# from ..visualization.validation_in_3d import render_cameras, render_projections
-from .decoder.decoder import Decoder, DepthRenderingMode
-from .encoder import Encoder
+from .decoder.decoder import DepthRenderingMode
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
-from .ply_export import export_ply
 
 def _normalize(x, eps=1e-8):
     return x / x.norm(dim=-1, keepdim=True).clamp_min(eps)
@@ -75,7 +55,7 @@ def _rodrigues_rotate(v, axis, angle):
     return v_par + ca * v_perp + sa * v_cross
 
 def _closest_approach_midpoint(C0, d0, C1, d1, eps=1e-6):
-    # d0, d1 assumed unit; 返回两光轴最近点对的中点；近平行退化为中心中点
+    # d0 and d1 are assumed to be unit vectors.
     v, w = d0, d1
     r = C0 - C1
     vw = (v * w).sum(-1, keepdim=True)
@@ -93,11 +73,10 @@ def generate_pivot_orbit_face_initial(
     extrinsic0, extrinsic1, t,
     theta_max_deg=5.0,
     axis="X",
-    # --- 新增：前推量（以“米”为参考单位） ---
-    forward_push_mean=0.02,   # 2 cm 平均值
-    forward_push_std=0.02,    # 2 cm 标准差
-    unit_scale=1.0,           # 若你的外参单位=米，保持1；若=厘米，设0.01
-    per_frame_noise=False     # True 则每帧抽一次（会抖），默认整段共享一个值
+    forward_push_mean=0.02,
+    forward_push_std=0.02,
+    unit_scale=1.0,
+    per_frame_noise=False,
 ):
     device = extrinsic0.device
     dtype  = extrinsic0.dtype
@@ -119,13 +98,10 @@ def generate_pivot_orbit_face_initial(
     t_smooth = (torch.cos(math.pi * (t + 1)) + 1) / 2
     angles = theta_max * torch.sin(2 * math.pi * t_smooth)  # [T]
 
-    # --- 新增：抽样“前推”距离（非负），整段视频共享 ---
     if per_frame_noise:
-        # [B,T,1]：每帧抽一次（会有轻微呼吸抖动）
         push = (torch.randn(B, T, 1, device=device, dtype=dtype) * forward_push_std
                 + forward_push_mean).clamp_min(0.0) * unit_scale
     else:
-        # [B,1,1]：整段共享一个前推量，更稳定
         push_val = (torch.randn(B, 1, device=device, dtype=dtype) * forward_push_std
                     + forward_push_mean).clamp_min(0.0) * unit_scale
         push = push_val.unsqueeze(1).expand(B, T, 1)  # [B,T,1]
@@ -133,17 +109,14 @@ def generate_pivot_orbit_face_initial(
     E = torch.zeros(B, T, 4, 4, device=device, dtype=dtype)
     E[:, :, 3, 3] = 1.0
 
-    # 第0帧严格等于起始外参（不施加前推与摆动）
     E[:, 0, :3, :3] = R0
     E[:, 0, :3, 3]  = C0
 
     for k in range(1, T):
         a = angles[k].view(B, 1)
-        # 位置：绕世界轴摆动（围绕 pivot）
         v_t = _rodrigues_rotate(v0, r_axis_world, a)         # [B,3]
         C_t = pivot + v_t                                    # [B,3]
 
-        # 旋转：在相机局部右乘同轴小角
         ax = r_axis_world
         x0, y0, z0 = R0[:, :, 0], R0[:, :, 1], R0[:, :, 2]
         x_t = _rodrigues_rotate(x0, ax, a)
@@ -151,8 +124,6 @@ def generate_pivot_orbit_face_initial(
         z_t = _rodrigues_rotate(z0, ax, a)
         R_t = torch.stack([x_t, y_t, z_t], dim=-1)           # [B,3,3]
 
-        # --- 新增：沿“当前前向”前推 push[...,k] ---
-        # 前向取当前姿态的 +Z（R_t 的第三列）
         fwd = R_t[:, :, 2]                                   # [B,3]
         C_t = C_t + push[:, k] * fwd                         # [B,3]
 
@@ -246,14 +217,6 @@ class ModelWrapper(LightningModule):
         
         if self.model.encoder.pred_pose:
             self.loss_pose = HuberLoss(alpha=self.train_cfg.pose_loss_alpha, delta=self.train_cfg.pose_loss_delta)
-        
-        if self.model.encoder.distill:
-            self.loss_distill = DistillLoss(
-                delta=self.train_cfg.pose_loss_delta,
-                weight_pose=self.train_cfg.weight_pose,
-                weight_depth=self.train_cfg.weight_depth,
-                weight_normal=self.train_cfg.weight_normal
-            )
 
         # This is used for testing.
         self.benchmarker = Benchmarker()
@@ -363,21 +326,6 @@ class ModelWrapper(LightningModule):
                 self.log("loss/ctx_depth", loss_depth)
                 total_loss = total_loss + loss_depth
 
-            # # pointmap loss
-            # if depth_dict is not None and "depth" and self.train_cfg.pm_loss_weight > 0:
-            #     loss_pm = self.compute_pointmap_loss(depth_dict)
-            #     self.log("loss/pm", loss_pm)
-            #     total_loss = total_loss + loss_pm
-                
-            # if distill_infos is not None:
-            #     # distill ctx pred_pose & depth & normal
-            #     loss_distill_list = self.loss_distill(distill_infos, pred_pose, output, batch)
-            #     self.log("loss/distill", loss_distill_list['loss_distill'])
-            #     self.log("loss/distill_pose", loss_distill_list['loss_pose'])
-            #     self.log("loss/distill_depth", loss_distill_list['loss_depth'])
-            #     self.log("loss/distill_normal", loss_distill_list['loss_normal'])
-            #     total_loss = total_loss + loss_distill_list['loss_distill']
-        
         self.log("loss/total", total_loss)
         print(f"\033[34m== total_loss: {total_loss} ==\033[0m")
 
@@ -737,7 +685,7 @@ class ModelWrapper(LightningModule):
         video_reshaped = video_reshaped.astype(np.uint8)
         save_path = "novel_view_output.mp4"
         imageio.mimwrite(save_path, video_reshaped, fps=30, quality=8) 
-        print(f"视频已成功保存至: {save_path}")
+        print(f"Video saved to: {save_path}")
 
     @rank_zero_only
     def render_video_wobble(self, batch: BatchedExample) -> None:

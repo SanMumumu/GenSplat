@@ -71,7 +71,7 @@ class GSHeadParams:
 
 @dataclass
 class EncoderGenSplatCfg:
-    name: Literal["gensplat"]
+    name: Literal["gensplatpi3"]
     anchor_feat_dim: int
     voxel_size: float
     n_offsets: int

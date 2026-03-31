@@ -1,6 +1,5 @@
-name: gensplat
+name: anysplat
 backbone_model_id: facebook/VGGT-1B
-distiller_model_id: yyfz233/Pi3
 
 opacity_mapping:
   initial: 0.0
@@ -30,13 +29,12 @@ apply_bounds_shim: true
 gs_params_head_type: dpt_gs
 pose_free: true
 pretrained_weights: ""
-distiller_pretrained_weights: ""
 scale_align: false
 
 voxel_size: 0.001
 n_offsets: 2
-anchor_feat_dim: 83 # 32
+anchor_feat_dim: 83
 add_view: false
-color_attr: 3D # 3D or RGB
+color_attr: 3D
 mlp_type: unified
 scaffold: true

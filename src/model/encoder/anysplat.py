@@ -1,3 +1,4 @@
+import copy
 from dataclasses import dataclass
 from typing import List, Literal, Optional
 
@@ -6,14 +7,9 @@ from einops import rearrange
 from jaxtyping import Float
 from torch import Tensor, nn
 
-from src.dataset.shims.normalize_shim import (
-    apply_normalize_shim,
-    inverse_normalize_image,
-)
+from src.dataset.shims.normalize_shim import apply_normalize_shim
 from src.dataset.types import BatchedExample, DataShim
-from src.misc.checkpoint_tools import load_module_checkpoint
 from src.model.encoder.heads.vggt_dpt_gs_head import VGGT_DPT_GS_Head
-from src.model.encoder.pi3.models.pi3 import Pi3
 from src.model.encoder.vggt.models.vggt import VGGT
 from src.model.encoder.vggt.utils.geometry import (
     batchify_unproject_depth_map_to_point_map,
@@ -51,8 +47,8 @@ class GSHeadParams:
 
 
 @dataclass
-class EncoderGenSplatCfg:
-    name: Literal["gensplat"]
+class EncoderAnySplatCfg:
+    name: Literal["anysplat"]
     anchor_feat_dim: int
     voxel_size: float
     n_offsets: int
@@ -94,15 +90,13 @@ class EncoderGenSplatCfg:
     intermediate_layer_idx: Optional[List[int]] = None
     voxelize: bool = False
     backbone_model_id: str = "facebook/VGGT-1B"
-    distiller_model_id: str = "yyfz233/Pi3"
-    distiller_pretrained_weights: str = ""
 
 
-class EncoderGenSplat(Encoder[EncoderGenSplatCfg]):
+class EncoderAnySplat(Encoder[EncoderAnySplatCfg]):
     backbone: nn.Module
     gaussian_adapter: GaussianAdapter
 
-    def __init__(self, cfg: EncoderGenSplatCfg) -> None:
+    def __init__(self, cfg: EncoderAnySplatCfg) -> None:
         super().__init__(cfg)
         model_full = VGGT.from_pretrained(cfg.backbone_model_id)
         self.aggregator = model_full.aggregator.to(torch.bfloat16)
@@ -116,9 +110,18 @@ class EncoderGenSplat(Encoder[EncoderGenSplatCfg]):
         else:
             self.point_head = model_full.point_head
 
-        self.distiller = None
         if self.distill:
-            self.distiller = self._build_distiller()
+            self.distill_aggregator = copy.deepcopy(self.aggregator)
+            self.distill_camera_head = copy.deepcopy(self.camera_head)
+            self.distill_depth_head = copy.deepcopy(self.depth_head)
+            for module in [
+                self.distill_aggregator,
+                self.distill_camera_head,
+                self.distill_depth_head,
+            ]:
+                for param in module.parameters():
+                    param.requires_grad = False
+                    param.data = param.data.cpu()
 
         if self.freeze_backbone:
             if self.cfg.pred_head_type == "depth":
@@ -170,35 +173,6 @@ class EncoderGenSplat(Encoder[EncoderGenSplatCfg]):
             features=head_params.feature_dim,
         )
 
-    def _build_distiller(self) -> Pi3:
-        if self.cfg.distiller_model_id:
-            distiller = Pi3.from_pretrained(self.cfg.distiller_model_id)
-        else:
-            distiller = Pi3()
-
-        if self.cfg.distiller_pretrained_weights:
-            incompatible, matched_keys = load_module_checkpoint(
-                distiller,
-                self.cfg.distiller_pretrained_weights,
-                prefixes=(
-                    "model.",
-                    "distiller.",
-                    "encoder.distiller.",
-                    "model.encoder.distiller.",
-                ),
-            )
-            print(
-                "Loaded Pi3 distiller checkpoint "
-                f"({matched_keys} matched keys, "
-                f"{len(incompatible.missing_keys)} missing, "
-                f"{len(incompatible.unexpected_keys)} unexpected)."
-            )
-
-        distiller.requires_grad_(False)
-        distiller.eval()
-        distiller.cpu()
-        return distiller
-
     def map_pdf_to_opacity(
         self,
         pdf: Float[Tensor, " *batch"],
@@ -224,45 +198,6 @@ class EncoderGenSplat(Encoder[EncoderGenSplatCfg]):
             padded.append(tensor)
         return torch.stack(padded)
 
-    def _forward_distiller(self, image: torch.Tensor) -> dict:
-        if self.distiller is None:
-            return {}
-
-        teacher_image = inverse_normalize_image(
-            image.detach(),
-            self.cfg.input_mean,
-            self.cfg.input_std,
-        )
-        self.distiller.to(image.device)
-
-        with torch.no_grad():
-            with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16):
-                distiller_outputs = self.distiller(teacher_image)
-
-        distill_points = distiller_outputs["points"].float()
-        distill_depth_map = distill_points[..., 2:3]
-        distill_conf = distiller_outputs["conf"].float().squeeze(-1)
-        conf_threshold = torch.quantile(
-            distill_conf.flatten(2, 3),
-            0.3,
-            dim=-1,
-            keepdim=True,
-        )
-        conf_mask = distill_conf > conf_threshold.unsqueeze(-1)
-
-        distill_infos = {
-            "camera_poses": distiller_outputs["camera_poses"].float(),
-            "pts_all": distill_points,
-            "point_map": distill_points,
-            "depth_map": distill_depth_map,
-            "conf_mask": conf_mask,
-        }
-
-        self.distiller.cpu()
-        del distiller_outputs
-        torch.cuda.empty_cache()
-        return distill_infos
-
     def forward(
         self,
         image: torch.Tensor,
@@ -271,7 +206,70 @@ class EncoderGenSplat(Encoder[EncoderGenSplatCfg]):
     ) -> Gaussians:
         device = image.device
         b, v, _, h, w = image.shape
-        distill_infos = self._forward_distiller(image) if self.distill else {}
+        distill_infos = {}
+
+        if self.distill:
+            distill_image = image.clone().detach()
+            for module in [
+                self.distill_aggregator,
+                self.distill_camera_head,
+                self.distill_depth_head,
+            ]:
+                for param in module.parameters():
+                    param.data = param.data.to(device, non_blocking=True)
+
+            with torch.no_grad():
+                with torch.amp.autocast("cuda", enabled=True, dtype=torch.bfloat16):
+                    distill_aggregated_tokens_list, distill_patch_start_idx = (
+                        self.distill_aggregator(
+                            distill_image.to(torch.bfloat16),
+                            intermediate_layer_idx=self.cfg.intermediate_layer_idx,
+                        )
+                    )
+
+                with torch.amp.autocast("cuda", enabled=False):
+                    distill_pred_pose_enc_list = self.distill_camera_head(
+                        distill_aggregated_tokens_list
+                    )
+                    last_distill_pred_pose_enc = distill_pred_pose_enc_list[-1]
+                    distill_extrinsic, distill_intrinsic = pose_encoding_to_extri_intri(
+                        last_distill_pred_pose_enc, image.shape[-2:]
+                    )
+                    distill_depth_map, distill_depth_conf = self.distill_depth_head(
+                        distill_aggregated_tokens_list,
+                        images=distill_image,
+                        patch_start_idx=distill_patch_start_idx,
+                    )
+                    distill_pts_all = batchify_unproject_depth_map_to_point_map(
+                        distill_depth_map,
+                        distill_extrinsic,
+                        distill_intrinsic,
+                    )
+
+                distill_infos["pred_pose_enc_list"] = distill_pred_pose_enc_list
+                distill_infos["pts_all"] = distill_pts_all
+                distill_infos["depth_map"] = distill_depth_map
+
+                conf_threshold = torch.quantile(
+                    distill_depth_conf.flatten(2, 3), 0.3, dim=-1, keepdim=True
+                )
+                distill_infos["conf_mask"] = (
+                    distill_depth_conf > conf_threshold.unsqueeze(-1)
+                )
+
+                for module in [
+                    self.distill_aggregator,
+                    self.distill_camera_head,
+                    self.distill_depth_head,
+                ]:
+                    for param in module.parameters():
+                        param.data = param.data.cpu()
+
+                del distill_aggregated_tokens_list, distill_patch_start_idx
+                del distill_pred_pose_enc_list, last_distill_pred_pose_enc
+                del distill_extrinsic, distill_intrinsic
+                del distill_depth_map, distill_depth_conf
+                torch.cuda.empty_cache()
 
         with torch.amp.autocast("cuda", enabled=True):
             aggregated_tokens_list, patch_start_idx = self.aggregator(

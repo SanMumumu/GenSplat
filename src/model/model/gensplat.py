@@ -1,25 +1,17 @@
-import os
-from copy import deepcopy
-import time
 from typing import Optional
-from einops import rearrange
 import huggingface_hub
-from omegaconf import DictConfig, OmegaConf
 import torch
-import torch.distributed
 import torch.nn as nn
-import numpy as np
-import torch.nn.functional as F
-from dataclasses import dataclass
 
 from src.model.encoder.common.gaussian_adapter import GaussianAdapterCfg
 from src.model.decoder.decoder_splatting_cuda import DecoderSplattingCUDA, DecoderSplattingCUDACfg
-from src.model.encoder.gensplat import EncoderGenSplat, EncoderGenSplatCfg, OpacityMappingCfg
+from src.model.encoder import EncoderCfg, get_encoder
+from src.model.encoder.anysplat import OpacityMappingCfg
 
 class GenSplat(nn.Module, huggingface_hub.PyTorchModelHubMixin):
     def __init__(
         self,
-        encoder_cfg: EncoderGenSplatCfg,
+        encoder_cfg: EncoderCfg,
         decoder_cfg: DecoderSplattingCUDACfg,
     ):  
         super(GenSplat, self).__init__()
@@ -76,7 +68,7 @@ class GenSplat(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         # Return new instance of the same type
         return type(cfg_obj)(**cfg_dict)
 
-    def convert_encoder_config(self, encoder_cfg: EncoderGenSplatCfg) -> EncoderGenSplatCfg:
+    def convert_encoder_config(self, encoder_cfg: EncoderCfg) -> EncoderCfg:
         """Convert all nested configurations in encoder_cfg"""
         conversion_map = {
             'gaussian_adapter': GaussianAdapterCfg,
@@ -85,10 +77,10 @@ class GenSplat(nn.Module, huggingface_hub.PyTorchModelHubMixin):
         
         return self.convert_config_recursively(encoder_cfg, conversion_map)
 
-    def build_encoder(self, encoder_cfg: EncoderGenSplatCfg):
+    def build_encoder(self, encoder_cfg: EncoderCfg):
         # Convert nested configurations using the helper method
         encoder_cfg = self.convert_encoder_config(encoder_cfg)
-        self.encoder = EncoderGenSplat(encoder_cfg)
+        self.encoder, _ = get_encoder(encoder_cfg)
 
     def build_decoder(self, decoder_cfg: DecoderSplattingCUDACfg):
         self.decoder = DecoderSplattingCUDA(decoder_cfg)

@@ -18,7 +18,7 @@ from src.evaluation.metrics import compute_lpips, compute_psnr, compute_ssim
 from misc.image_io import save_image, save_interpolated_video
 from src.utils.image import process_image
 
-from src.model.model.gensplat import GenSplat
+from src.model.model.anysplat import AnySplat
 from src.model.encoder.vggt.utils.pose_enc import pose_encoding_to_extri_intri
 
 def setup_args():
