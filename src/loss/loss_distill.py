@@ -69,6 +69,21 @@ def huber_loss(x, y, delta=1.0):
     flag = (abs_diff <= delta).to(diff.dtype)
     return flag * 0.5 * diff**2 + (1 - flag) * delta * (abs_diff - 0.5 * delta)
 
+def rotation_loss(R_pred, R_gt, eps=1e-6):
+    # Ensure both R_pred and R_gt are of shape [batch_size, num_pairs, 3, 3]
+    assert R_pred.shape[-2:] == (3, 3), "R_pred should be of shape [batch_size, num_pairs, 3, 3]"
+    assert R_gt.shape[-2:] == (3, 3), "R_gt should be of shape [batch_size, num_pairs, 3, 3]"
+
+    # Perform matrix multiplication between R_gt and R_pred
+    matmul_result = torch.matmul(R_gt.transpose(-1, -2), R_pred)
+    
+    # Compute the trace for each 3x3 matrix in the batch
+    # Trace is the sum of the diagonal elements
+    trace_term = torch.sum(torch.diagonal(matmul_result, dim1=-2, dim2=-1), dim=-1) - 1
+    
+    # Return the geodesic loss (angle)
+    return torch.acos(torch.clamp(trace_term / 2, min=-1.0+eps, max=1.0-eps))
+
 class DistillLoss(nn.Module):
     def __init__(self, delta=1.0, gamma=0.6, weight_pose=1.0, weight_depth=1.0, weight_normal=1.0):
         super().__init__()
@@ -108,22 +123,15 @@ class DistillLoss(nn.Module):
         
         return loss_T, loss_R, loss_fl
 
-    def forward(self, distill_infos, pred_pose_enc_list, prediction, batch):
+    def forward(self, distill_infos, pred_pose, prediction, batch):
         loss_pose = 0.0
-
-        if pred_pose_enc_list is not None:
-            num_predictions = len(pred_pose_enc_list)
-            pesudo_gt_pose_enc = distill_infos['pred_pose_enc_list']
-            for i in range(num_predictions):
-                i_weight = self.gamma ** (num_predictions - i - 1)
-                cur_pred_pose_enc = pred_pose_enc_list[i]
-                cur_pesudo_gt_pose_enc = pesudo_gt_pose_enc[i]
-                loss_pose += i_weight * huber_loss(cur_pred_pose_enc, cur_pesudo_gt_pose_enc).mean()
-            loss_pose = loss_pose / num_predictions
-            loss_pose = torch.nan_to_num(loss_pose, nan=0.0, posinf=0.0, neginf=0.0)
+        loss_trans = F.huber_loss(pred_pose[..., :3, 3], distill_infos['camera_poses'][..., :3, 3], reduction='mean')
+        loss_rot = rotation_loss(pred_pose[..., :3, :3], distill_infos['camera_poses'][..., :3, :3]).mean()
+        
+        loss_pose = loss_rot + loss_trans        
         
         pred_depth = prediction.depth.flatten(0, 1)
-        pesudo_gt_depth = distill_infos['depth_map'].flatten(0, 1).squeeze(-1)
+        pesudo_gt_depth = distill_infos['point_map'][..., 2:3].flatten(0, 1).squeeze(-1)
         conf_mask = distill_infos['conf_mask'].flatten(0, 1)
 
         if batch['context']['valid_mask'].sum() > 0:

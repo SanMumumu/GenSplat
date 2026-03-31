@@ -29,7 +29,7 @@ class VGGT_DPT_GS_Head(DPTHead):
             conf_activation: str = "expp1",
             features: int = 256,
             out_channels: List[int] = [256, 512, 1024, 1024],
-            intermediate_layer_idx: List[int] = [4, 11, 17, 23],
+            intermediate_layer_idx: List[int] = [4, 11, 17, 23], # [4, 11, 17, 23]  [4, 14, 24, 34]
             pos_embed: bool = True,
             feature_only: bool = False,
             down_ratio: int = 1,

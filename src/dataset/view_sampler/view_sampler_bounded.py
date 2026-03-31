@@ -40,13 +40,19 @@ class ViewSamplerBounded(ViewSampler[ViewSamplerBoundedCfg]):
         Int64[Tensor, " target_view"],  # indices for target views
         Float[Tensor, " overlap"],  # overlap
     ]:
-        num_views, _, _ = extrinsics.shape
+        # # tow sides + one wrist 
+        # num_views, _, _ = extrinsics.shape
 
-        index_context = torch.arange(num_views, device=device)
-        index_target = torch.arange(num_views, device=device)
+        # index_context = torch.arange(num_views, device=device)
+        # index_target = torch.arange(num_views, device=device)
         
-        overlap = torch.tensor([0.5], dtype=torch.float32, device=device)  # dummy
+        # overlap = torch.tensor([0.5], dtype=torch.float32, device=device)  # dummy
 
+        # tow sides       
+        index_context = torch.tensor([1, 2], device=device)
+        index_target = torch.tensor([1, 2], device=device)
+        
+        overlap = torch.tensor([0.5, 0.5], dtype=torch.float32, device=device)  # dummy
         return (
             index_context,
             index_target,

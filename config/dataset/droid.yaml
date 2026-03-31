@@ -3,7 +3,8 @@ defaults:
   - view_sampler: bounded
 
 name: droid
-roots: [/mnt/hwdata/wangsen/droid_GS/]
+# roots: [/mnt/nodestor/ws/GS/AnySplat/dataset/Droid_paper] # /mnt/hwdata/wangsen/droid_GS/
+roots: [/mnt/nodestor/ws/GS/AnySplat/dataset/test] # /mnt/hwdata/wangsen/droid_GS/
 
 original_image_shape: [720, 1280]
 cameras_are_circular: false

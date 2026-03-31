@@ -137,9 +137,6 @@ def train(cfg_dict: DictConfig):
     model_weights = load_file(checkpoint_path)
     model.load_state_dict(model_weights, strict=False)
     
-    model_weights = load_file('/mnt/nodestor/ws/GS/AnySplat/Z/model.safetensors')
-    model.load_state_dict(model_weights, strict=False)
-    
     model_wrapper = ModelWrapper(
         cfg.optimizer,
         cfg.test,

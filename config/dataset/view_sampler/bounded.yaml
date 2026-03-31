@@ -1,7 +1,7 @@
 name: bounded
 
 num_target_views: 1
-num_context_views: 3
+num_context_views: 2
 
 min_distance_between_context_views: 2
 max_distance_between_context_views: 6

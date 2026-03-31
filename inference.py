@@ -7,12 +7,12 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.misc.image_io import save_interpolated_video
 from src.model.ply_export import export_ply
-from src.model.model.anysplat import AnySplat
+from model.model.gensplat import GenSplat
 from src.utils.image import process_image
 
 def main():
     # Load the model from Hugging Face
-    model = AnySplat.from_pretrained("lhjiang/anysplat")
+    model = GenSplat.from_pretrained("lhjiang/anysplat")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     model.eval()
@@ -20,7 +20,7 @@ def main():
         param.requires_grad = False
     
     # Load Images
-    image_folder = "examples/vrnerf/riverview"
+    image_folder = "examples/RAD"
     images = sorted([os.path.join(image_folder, f) for f in os.listdir(image_folder) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
     images = [process_image(img_path) for img_path in images]
     images = torch.stack(images, dim=0).unsqueeze(0).to(device) # [1, K, 3, 448, 448]

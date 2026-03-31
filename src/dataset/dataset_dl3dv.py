@@ -137,6 +137,8 @@ class DatasetDL3DV(Dataset):
             futures_with_idx = []
             for idx, file_path in enumerate(frames):
                 file_path = file_path["file_path"]
+                if "wrist" in file_path:
+                    assert "wrist" not in file_path, "Wrist perspective should not exist"
                 futures_with_idx.append((idx, executor.submit(lambda p: self.to_tensor(Image.open(p).convert("RGB")),file_path,),))
             
             # Pre-allocate list with correct size to maintain order
@@ -289,7 +291,7 @@ class DatasetDL3DV(Dataset):
         example = apply_crop_shim(example, (patchsize[0] * 14, patchsize[1] * 14), intr_aug=intr_aug)
 
         image_size = example["context"]["image"].shape[2:]
-        print(f"-- Image Size = {image_size} --")
+        # print(f"-- Image Size = {image_size} --") # Debug
         context_intrinsics = example["context"]["intrinsics"].clone().detach().numpy()
         context_intrinsics[:, 0] = context_intrinsics[:, 0] * image_size[1]
         context_intrinsics[:, 1] = context_intrinsics[:, 1] * image_size[0]

@@ -5,6 +5,7 @@ from typing import Literal, Optional, Protocol, runtime_checkable
 
 import moviepy.editor as mpy
 import torch
+import math
 import swanlab
 from einops import pack, rearrange, repeat
 from jaxtyping import Float
@@ -14,6 +15,7 @@ from lightning.pytorch.utilities import rank_zero_only
 from tabulate import tabulate
 from torch import Tensor, nn
 from datetime import datetime
+import imageio
 import imageio.v2 as iio
 import numpy as np
 
@@ -60,6 +62,105 @@ from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
 from .ply_export import export_ply
 
+def _normalize(x, eps=1e-8):
+    return x / x.norm(dim=-1, keepdim=True).clamp_min(eps)
+
+def _rodrigues_rotate(v, axis, angle):
+    # v, axis: [..., 3]; angle: [..., 1]
+    axis = _normalize(axis)
+    sa, ca = torch.sin(angle), torch.cos(angle)
+    v_par  = (v * axis).sum(-1, keepdim=True) * axis
+    v_perp = v - v_par
+    v_cross = torch.cross(axis, v, dim=-1)
+    return v_par + ca * v_perp + sa * v_cross
+
+def _closest_approach_midpoint(C0, d0, C1, d1, eps=1e-6):
+    # d0, d1 assumed unit; 返回两光轴最近点对的中点；近平行退化为中心中点
+    v, w = d0, d1
+    r = C0 - C1
+    vw = (v * w).sum(-1, keepdim=True)
+    denom = (1.0 - vw * vw).clamp_min(eps)
+    s = ( vw * (r * w).sum(-1, keepdim=True) - (r * v).sum(-1, keepdim=True) ) / denom
+    t = ( (r * w).sum(-1, keepdim=True) - vw * (r * v).sum(-1, keepdim=True) ) / denom
+    P0 = C0 + s * v
+    P1 = C1 + t * w
+    mid = 0.5 * (P0 + P1)
+    parallel = (1.0 - vw.abs()).squeeze(-1) < 1e-3
+    return torch.where(parallel[..., None], 0.5 * (C0 + C1), mid)
+
+@torch.no_grad()
+def generate_pivot_orbit_face_initial(
+    extrinsic0, extrinsic1, t,
+    theta_max_deg=5.0,
+    axis="X",
+    # --- 新增：前推量（以“米”为参考单位） ---
+    forward_push_mean=0.02,   # 2 cm 平均值
+    forward_push_std=0.02,    # 2 cm 标准差
+    unit_scale=1.0,           # 若你的外参单位=米，保持1；若=厘米，设0.01
+    per_frame_noise=False     # True 则每帧抽一次（会抖），默认整段共享一个值
+):
+    device = extrinsic0.device
+    dtype  = extrinsic0.dtype
+    B, T = extrinsic0.shape[0], t.shape[0]
+
+    R0 = extrinsic0[:, :3, :3]
+    C0 = extrinsic0[:, :3, 3]
+    R1 = extrinsic1[:, :3, :3]
+    C1 = extrinsic1[:, :3, 3]
+    d0 = _normalize(R0[:, :, 2])
+    d1 = _normalize(R1[:, :, 2])
+
+    pivot = _closest_approach_midpoint(C0, d0, C1, d1)
+
+    v0 = C0 - pivot
+    r_axis_world = R0[:, :, 0] if axis.upper() == "X" else R0[:, :, 1]
+
+    theta_max = theta_max_deg * math.pi / 180.0
+    t_smooth = (torch.cos(math.pi * (t + 1)) + 1) / 2
+    angles = theta_max * torch.sin(2 * math.pi * t_smooth)  # [T]
+
+    # --- 新增：抽样“前推”距离（非负），整段视频共享 ---
+    if per_frame_noise:
+        # [B,T,1]：每帧抽一次（会有轻微呼吸抖动）
+        push = (torch.randn(B, T, 1, device=device, dtype=dtype) * forward_push_std
+                + forward_push_mean).clamp_min(0.0) * unit_scale
+    else:
+        # [B,1,1]：整段共享一个前推量，更稳定
+        push_val = (torch.randn(B, 1, device=device, dtype=dtype) * forward_push_std
+                    + forward_push_mean).clamp_min(0.0) * unit_scale
+        push = push_val.unsqueeze(1).expand(B, T, 1)  # [B,T,1]
+
+    E = torch.zeros(B, T, 4, 4, device=device, dtype=dtype)
+    E[:, :, 3, 3] = 1.0
+
+    # 第0帧严格等于起始外参（不施加前推与摆动）
+    E[:, 0, :3, :3] = R0
+    E[:, 0, :3, 3]  = C0
+
+    for k in range(1, T):
+        a = angles[k].view(B, 1)
+        # 位置：绕世界轴摆动（围绕 pivot）
+        v_t = _rodrigues_rotate(v0, r_axis_world, a)         # [B,3]
+        C_t = pivot + v_t                                    # [B,3]
+
+        # 旋转：在相机局部右乘同轴小角
+        ax = r_axis_world
+        x0, y0, z0 = R0[:, :, 0], R0[:, :, 1], R0[:, :, 2]
+        x_t = _rodrigues_rotate(x0, ax, a)
+        y_t = _rodrigues_rotate(y0, ax, a)
+        z_t = _rodrigues_rotate(z0, ax, a)
+        R_t = torch.stack([x_t, y_t, z_t], dim=-1)           # [B,3,3]
+
+        # --- 新增：沿“当前前向”前推 push[...,k] ---
+        # 前向取当前姿态的 +Z（R_t 的第三列）
+        fwd = R_t[:, :, 2]                                   # [B,3]
+        C_t = C_t + push[:, k] * fwd                         # [B,3]
+
+        E[:, k, :3, :3] = R_t
+        E[:, k, :3, 3]  = C_t
+
+    return E
+
 @dataclass
 class OptimizerCfg:
     lr: float
@@ -93,6 +194,7 @@ class TrainCfg:
     pose_loss_alpha: float = 1.0
     pose_loss_delta: float = 1.0
     cxt_depth_weight: float = 0.01
+    pm_loss_weight: float = 0.01
     weight_pose: float = 1.0
     weight_depth: float = 1.0
     weight_normal: float = 1.0
@@ -156,6 +258,22 @@ class ModelWrapper(LightningModule):
         # This is used for testing.
         self.benchmarker = Benchmarker()
         
+    def compute_pointmap_loss(self, depth_dict):
+        stud_pts = depth_dict["pts"]
+        distill_infos = depth_dict.get("distill_infos", {})
+        teach_pts = distill_infos.get("pts_all", None)
+        if teach_pts is None:
+            return torch.tensor(0.0, dtype=torch.float32, device=stud_pts.device)
+
+        teach_mask, stud_mask = distill_infos.get("conf_mask", None), depth_dict.get("conf_valid_mask", None) 
+        valid_mask = stud_mask & teach_mask 
+        if not valid_mask.any():
+            return torch.tensor(0.0, dtype=torch.float32, device=stud_pts.device)
+        # Compute L2 distance between predicted and ground truth points
+        pm_loss = torch.norm(teach_pts[valid_mask] - stud_pts[valid_mask], dim=-1).mean()
+
+        return self.train_cfg.pm_loss_weight * pm_loss
+
     def on_train_epoch_start(self) -> None:
         # our custom dataset and sampler has to have epoch set by calling set_epoch
         if hasattr(self.trainer.datamodule.train_loader.dataset, "set_epoch"):
@@ -189,11 +307,12 @@ class ModelWrapper(LightningModule):
                         else:
                             raise NotImplementedError
             batch = batch_combined
-            
+
         # Run the model.
         visualization_dump = None
         encoder_output, output = self.model(batch["context"]["image"], self.global_step, visualization_dump=visualization_dump)
         gaussians, pred_pose_enc_list, pred_context_pose = encoder_output.gaussians, encoder_output.pred_pose_enc_list, encoder_output.pred_context_pose
+        # gaussians, pred_pose, pred_context_pose = encoder_output.gaussians, encoder_output.pred_pose, encoder_output.pred_context_pose
         depth_dict, infos, distill_infos = encoder_output.depth_dict, encoder_output.infos, encoder_output.distill_infos
         
         num_context_views = pred_context_pose['extrinsic'].shape[1]
@@ -244,14 +363,20 @@ class ModelWrapper(LightningModule):
                 self.log("loss/ctx_depth", loss_depth)
                 total_loss = total_loss + loss_depth
 
-            if distill_infos is not None:
-                # distill ctx pred_pose & depth & normal
-                loss_distill_list = self.loss_distill(distill_infos, pred_pose_enc_list, output, batch)
-                self.log("loss/distill", loss_distill_list['loss_distill'])
-                self.log("loss/distill_pose", loss_distill_list['loss_pose'])
-                self.log("loss/distill_depth", loss_distill_list['loss_depth'])
-                self.log("loss/distill_normal", loss_distill_list['loss_normal'])
-                total_loss = total_loss + loss_distill_list['loss_distill']
+            # # pointmap loss
+            # if depth_dict is not None and "depth" and self.train_cfg.pm_loss_weight > 0:
+            #     loss_pm = self.compute_pointmap_loss(depth_dict)
+            #     self.log("loss/pm", loss_pm)
+            #     total_loss = total_loss + loss_pm
+                
+            # if distill_infos is not None:
+            #     # distill ctx pred_pose & depth & normal
+            #     loss_distill_list = self.loss_distill(distill_infos, pred_pose, output, batch)
+            #     self.log("loss/distill", loss_distill_list['loss_distill'])
+            #     self.log("loss/distill_pose", loss_distill_list['loss_pose'])
+            #     self.log("loss/distill_depth", loss_distill_list['loss_depth'])
+            #     self.log("loss/distill_normal", loss_distill_list['loss_normal'])
+            #     total_loss = total_loss + loss_distill_list['loss_distill']
         
         self.log("loss/total", total_loss)
         print(f"\033[34m== total_loss: {total_loss} ==\033[0m")
@@ -563,9 +688,56 @@ class ModelWrapper(LightningModule):
             ).items():
                 self.logger.log_image(k, [prep_image(image)], step=self.global_step)
         
+        self.render_novel_views(batch)
         # Run video validation step. (Disabled for acceleated training)
         # self.render_video_interpolation(batch)
         # self.render_video_wobble(batch)
+
+    @rank_zero_only
+    def render_novel_views(self, batch: BatchedExample) -> None:
+        _, v, _, h, w = batch["context"]["image"].shape
+        enc = self.model.encoder(batch["context"]["image"], self.global_step)
+        gaussians, pred = enc.gaussians, enc.pred_context_pose
+
+        num_frames = 60
+        t = torch.linspace(0, 1, num_frames, dtype=torch.float32, device=self.device)
+        near = repeat(batch["context"]["near"][:, 0], "b -> b v", v=num_frames)
+        far = repeat(batch["context"]["far"][:, 0], "b -> b v", v=num_frames)
+
+        extrinsics = generate_pivot_orbit_face_initial(
+            pred["extrinsic"][:, 0],
+            pred["extrinsic"][:, 1],
+            t,
+            theta_max_deg=20,
+            axis="X",                 # or "Y"
+            forward_push_mean=0.02,   # 2 cm
+            forward_push_std=0.02,    # 2 cm
+            unit_scale=1.0,
+            per_frame_noise=False     # slight breathing jitter
+        )
+            
+        intrinsics = repeat(
+            pred["intrinsic"][:, 0],
+            "b i j -> b v i j", v=t.shape[0],
+        )       
+        output = self.model.decoder.forward(
+            gaussians, extrinsics, intrinsics, near, far, (h, w), "depth"
+        )
+        
+        images = [
+            vcat(rgb, depth)
+            for rgb, depth in zip(output.color[0], vis_depth_map(output.depth[0]))
+        ]
+
+        video = torch.stack(images)
+        video = (video.clip(min=0, max=1) * 255).type(torch.uint8).cpu().numpy()
+        video = pack([video, video[::-1][1:-1]], "* c h w")[0]
+        
+        video_reshaped = video.transpose(0, 2, 3, 1)
+        video_reshaped = video_reshaped.astype(np.uint8)
+        save_path = "novel_view_output.mp4"
+        imageio.mimwrite(save_path, video_reshaped, fps=30, quality=8) 
+        print(f"视频已成功保存至: {save_path}")
 
     @rank_zero_only
     def render_video_wobble(self, batch: BatchedExample) -> None:
@@ -623,7 +795,7 @@ class ModelWrapper(LightningModule):
     ) -> None:
         # Render probabilistic estimate of scene.
         encoder_output = self.model.encoder(batch["context"]["image"], self.global_step)
-        gaussians, pred_pose_enc_list = encoder_output.gaussians, encoder_output.pred_pose_enc_list
+        gaussians, pred_pose = encoder_output.gaussians, encoder_output.pred_pose
 
         t = torch.linspace(0, 1, num_frames, dtype=torch.float32, device=self.device)
         if smooth:

@@ -26,7 +26,7 @@ model:
     conf_threshold: 0.1
     freeze_module: patch_embed
     opacity_conf: false # ablate: Opacity-based pruning
-    intermediate_layer_idx: [4, 11, 17, 23]
+    intermediate_layer_idx: [4, 11, 17, 23] # [4, 11, 17, 23] [4, 14, 24, 34] 
     
 dataset:
   droid:
@@ -74,6 +74,7 @@ train:
   pose_loss_alpha: 1.0
   pose_loss_delta: 1.0
   cxt_depth_weight: 0.0
+  pm_loss_weight: 0.01
   weight_pose: 10.0
   weight_depth: 1.0
   weight_normal: 0.0

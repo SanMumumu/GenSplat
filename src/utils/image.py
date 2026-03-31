@@ -183,3 +183,27 @@ def process_image(img_path):
     # img = img.crop((left, top, right, bottom))
     img_tensor = torchvision.transforms.ToTensor()(img) * 2.0 - 1.0 # [-1, 1]
     return img_tensor
+
+# def process_image(img_path):
+#     img = Image.open(img_path)
+#     if img.mode == 'RGBA':
+#         # Convert RGBA to RGB by removing alpha channel
+#         img = img.convert('RGB')
+#     # Resize to maintain aspect ratio and then center crop to 448x448
+#     width, height = img.size
+#     if width > height:
+#         new_height = 448
+#         new_width = int(width * (new_height / height))
+#     else:
+#         new_width = 448
+#         new_height = int(height * (new_width / width))
+#     img = img.resize((new_width, new_height))
+    
+#     # Center crop
+#     left = (new_width - 448) // 2
+#     top = (new_height - 448) // 2
+#     right = left + 448
+#     bottom = top + 448
+#     img = img.crop((left, top, right, bottom))
+#     img_tensor = torchvision.transforms.ToTensor()(img) * 2.0 - 1.0 # [-1, 1]
+#     return img_tensor

@@ -18,7 +18,7 @@ from PIL import Image
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.misc.image_io import save_interpolated_video
-from src.model.model.anysplat import AnySplat
+from src.model.model.gensplat import GenSplat
 from src.model.ply_export import export_ply
 from src.utils.image import process_image
 
@@ -203,7 +203,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     # Load model
-    model = AnySplat.from_pretrained(
+    model = GenSplat.from_pretrained(
         "lhjiang/anysplat"
     )
     model = model.to(device)

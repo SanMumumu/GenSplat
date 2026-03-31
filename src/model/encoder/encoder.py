@@ -17,6 +17,7 @@ T = TypeVar("T")
 class EncoderOutput:
     gaussians: Gaussians
     pred_pose_enc_list: list[Float[Tensor, "batch view 6"]] | None
+    # pred_pose: Tensor | None
     pred_context_pose: dict | None
     depth_dict: dict | None
     infos: dict | None

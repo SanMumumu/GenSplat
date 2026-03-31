@@ -27,7 +27,7 @@ class LossDepthConsisCfg:
     weight: float
     sigma_image: float | None
     use_second_derivative: bool
-    loss_type: Literal['MSE', 'EdgeAwareLogL1', 'PearsonDepth'] = 'MSE'
+    loss_type: Literal['MSE', 'EdgeAwareLogL1', 'mse_edge'] = 'mse_edge'
     detach: bool = False
     conf: bool = False
     not_use_valid_mask: bool = False
@@ -131,10 +131,12 @@ class LossDepthConsis(Loss[LossDepthConsisCfg, LossDepthConsisCfgWrapper]):
             pred_depth = pred_depth.detach()
         if self.cfg.loss_type == 'MSE':
             depth_loss = F.mse_loss(rendered_depth, pred_depth, reduction='none')[valid_mask].mean()
-        elif self.cfg.loss_type == 'EdgeAwareLogL1':
+        elif self.cfg.loss_type == 'mse_edge':
+            mse_loss = F.mse_loss(rendered_depth, pred_depth, reduction='none')[valid_mask].mean()
             rendered_depth = rendered_depth.flatten(0, 1).unsqueeze(-1)
             pred_depth = pred_depth.flatten(0, 1).unsqueeze(-1)
             gt_rgb = gt_rgb.flatten(0, 1).permute(0, 2, 3, 1)
             valid_mask = valid_mask.flatten(0, 1).unsqueeze(-1)
-            depth_loss = EdgeAwareLogL1()(rendered_depth, pred_depth, gt_rgb, valid_mask)
+            edge_loss = EdgeAwareLogL1()(rendered_depth, pred_depth, gt_rgb, valid_mask)
+            depth_loss = mse_loss + 0.05 * edge_loss
         return self.cfg.weight * torch.nan_to_num(depth_loss, nan=0.0)
